@@ -6,7 +6,7 @@
 # as bug patching. IDA Patcher blends into the standard IDA user interface
 # through the addition of a subview and several menu items. 
 
-IDAPATCHER_VERSION = "1.2"
+IDAPATCHER_VERSION = "1.3"
 
 # Copyright (C) 2014 Peter Kacherginsky
 # All rights reserved.
@@ -236,6 +236,15 @@ r"""Edit comment
         self.Compile()
 
 #--------------------------------------------------------------------------
+# Helper functions
+#--------------------------------------------------------------------------
+def to_var_base(ea):
+    if PrevNotTail(ea) and NextNotTail(PrevNotTail(ea)) != ea:
+        return PrevNotTail(ea)
+    else:
+        return ea
+
+#--------------------------------------------------------------------------
 # Chooser
 #--------------------------------------------------------------------------
 class PatchView(Choose2):
@@ -327,10 +336,10 @@ class PatchView(Choose2):
         # Add new patch byte to the list
         else:
 
-            name = SegName(ea)
-
-            if GetFunctionName(ea) or Name(ea):
-                name += ": %s" % GetFunctionName(ea) or Name(ea)
+            seg = SegName(ea)
+            name = GetFunctionName(ea) or Name(to_var_base(ea)) or ''
+            name = idc.Demangle(name, idc.GetLongPrm(idc.INF_SHORT_DN)) or name
+            name = "%s: %s" % (seg, name)
 
             # we dont need repeated comment
             comment = Comment(ea) or ""
@@ -425,7 +434,7 @@ class PatchView(Choose2):
             org_str = self.items[n][4]
 
             # Create the form
-            f = PatchEditForm(addr_str, fpos_str, patch_str, org_str)
+            f = PatchRestoreForm(addr_str, fpos_str, patch_str, org_str)
 
             # Execute the form
             ok = f.Execute()
@@ -463,7 +472,10 @@ class PatchView(Choose2):
                 
                 # Get edited comment value
                 buf = f.strComment.value
-                MakeComm(ea, buf)
+
+                # make comment in the middle of instruction could fail
+                # -> switch ea to the start of instruction
+                MakeComm(to_var_base(ea), buf)
 
                 # Refresh all IDA views
                 self.refreshitems()
