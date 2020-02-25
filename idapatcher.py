@@ -1,26 +1,26 @@
 #!/usr/bin/env python
 #
-# IDA Patcher is a plugin for Hex-Ray's IDA Pro disassembler designed to 
-# enhance IDA's ability to patch binary files and memory. The plugin is 
+# IDA Patcher is a plugin for Hex-Ray's IDA Pro disassembler designed to
+# enhance IDA's ability to patch binary files and memory. The plugin is
 # useful for tasks related to malware analysis, exploit development as well
 # as bug patching. IDA Patcher blends into the standard IDA user interface
-# through the addition of a subview and several menu items. 
+# through the addition of a subview and several menu items.
 
-IDAPATCHER_VERSION = "1.3"
+IDAPATCHER_VERSION = "2.0"
 
 # Copyright (C) 2014 Peter Kacherginsky
 # All rights reserved.
 #
 # Redistribution and use in source and binary forms, with or without
-# modification, are permitted provided that the following conditions are met: 
+# modification, are permitted provided that the following conditions are met:
 #
 # 1. Redistributions of source code must retain the above copyright notice, this
-#    list of conditions and the following disclaimer. 
+#    list of conditions and the following disclaimer.
 # 2. Redistributions in binary form must reproduce the above copyright notice,
 #    this list of conditions and the following disclaimer in the documentation
 #    and/or other materials provided with the distribution.
 # 3. Neither the name of the copyright holder nor the names of its contributors
-#    may be used to endorse or promote products derived from this software without 
+#    may be used to endorse or promote products derived from this software without
 #    specific prior written permission.
 #
 # THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND
@@ -38,7 +38,7 @@ IDAPATCHER_VERSION = "1.3"
 import idaapi
 import idautils
 import idc
-from idaapi import Form, Choose2, plugin_t
+from idaapi import Form, Choose2, Choose, plugin_t
 
 # Python modules
 import os
@@ -55,7 +55,7 @@ class PatchRestoreForm(Form):
     Form to aid in restoring patched bytes to their original values.
     """
     def __init__(self, addr_str, fpos_str, patch_str, org_str):
-        Form.__init__(self, 
+        Form.__init__(self,
 r"""BUTTON YES* Restore
 BUTTON CANCEL Cancel
 Restore patch bytes
@@ -160,6 +160,104 @@ Fill bytes
         self.Compile()
 
 #--------------------------------------------------------------------------
+class PatchExportForm(Form):
+    """
+    Form to fill a range of addresses with a specified byte value.
+    """
+    def __init__(self):
+
+        Form.__init__(self,
+r"""BUTTON YES* Export
+Export patches
+
+<Export path:{expPath}>
+""", {
+        'expPath': Form.DirInput(swidth=50, value=os.path.dirname(get_input_file_path()))
+        })
+
+        self.Compile()
+
+#--------------------------------------------------------------------------
+class PatchImportForm(Form):
+    """
+    Form to fill a range of addresses with a specified byte value.
+    """
+    def __init__(self):
+        self.chooser = EmbeddedChooser()
+        self.valid_patches = []
+        self.selected_idx = []
+        Form.__init__(self,
+r"""BUTTON YES* Done
+Import patches
+
+<Loaded patches:{cChooser}>
+<Import path:{impPath}>
+<Import:{btnImport}><Patch select:{btnSelPatch}><Patch all:{btnPatch}>
+""", {
+        'impPath': Form.DirInput(swidth=60, value=get_input_file_path()+'.idapatch'),
+        'cChooser': Form.EmbeddedChooserControl(self.chooser, swidth=71),
+        'btnImport': Form.ButtonInput(self.OnImportClick),
+        'btnSelPatch': Form.ButtonInput(self.OnPatchClick),
+        'btnPatch': Form.ButtonInput(self.OnPatchClick, code=1)
+        })
+        self.Compile()
+
+    def OnImportClick(self, code):
+        imp_path = self.GetControlValue(self.impPath)
+        imp_data = []
+        with open(imp_path, 'rb') as imp_file:
+            imp_data = pickle.load(imp_file)
+
+        # check correctness first
+        view_patches = []
+        for patch in imp_data:
+            var_name, offset, length, patch_val, org_val, comments = patch
+            if not var_name:
+                print '[Warning] Unable to parse patch without symbol', patch
+                continue
+
+            ea = idc.get_name_ea_simple(var_name) + offset
+            seg = SegName(ea)
+            name = GetFunctionName(ea) or Name(to_var_base(ea)) or ''
+            name = idc.Demangle(name, idc.GetLongPrm(idc.INF_SHORT_DN)) or name
+            name = "{}: {}".format(seg, name)
+
+            cmp_val = idaapi.get_bytes(ea, length)
+            str_val = struct.pack("B"*length, *org_val)
+
+            if cmp_val == str_val:
+                self.valid_patches.append((ea, length, patch_val, comments))
+                view_patches.append([
+                    name,
+                    "{:04X}".format(offset),
+                    str(length),
+                    " ".join(map(lambda n: "{:02X}".format(n), patch_val)),
+                    " ".join(map(lambda n: "{:02X}".format(n), org_val)),
+                    comments
+                ])
+
+        self.chooser.SetItems(view_patches)
+        self.RefreshField(self.cChooser)
+
+    def OnPatchClick(self, code):
+        patches = []
+
+        if code == 1:
+            patches = self.valid_patches
+            view_patches = []
+        else:
+            idx = self.chooser.GetSelectedLine()
+            patches = [self.valid_patches[i] for i in idx]
+            view_patches = [self.chooser.items[i] for i in range(len(self.chooser.items)) if i not in idx]
+
+        for ea, length, patch_val, comments in patches:
+            idaapi.put_many_bytes(ea, struct.pack("B"*length, *patch_val))
+            MakeComm(to_var_base(ea), comments)
+
+        self.chooser.SetItems(view_patches)
+        self.RefreshField(self.cChooser)
+
+#--------------------------------------------------------------------------
 class DataImportForm(Form):
     """
     Form to import data of various types into selected area.
@@ -180,7 +278,7 @@ Import type:                    Patching options:
 
 <:{strPatch}>
 <##Import BIN file:{impFile}>
-""", {        
+""", {
         'intStartEA': Form.NumericInput(swidth=40,tp=Form.FT_ADDR,value=start_ea),
         'intEndEA': Form.NumericInput(swidth=40,tp=Form.FT_ADDR,value=end_ea),
 
@@ -239,14 +337,72 @@ r"""Edit comment
 # Helper functions
 #--------------------------------------------------------------------------
 def to_var_base(ea):
-    if PrevNotTail(ea) and NextNotTail(PrevNotTail(ea)) != ea:
-        return PrevNotTail(ea)
-    else:
-        return ea
+    return idaapi.get_item_head(ea)
+
+def prepare_export_data(patches):
+    export_data = []
+
+    for (ea, fpos, len, patch_val, org_val, comments) in patches:
+        var_name = GetFunctionName(ea) or Name(to_var_base(ea))
+        base = idc.get_name_ea_simple(var_name)
+        offset = ea - base
+
+        if offset < 0:
+            print '[Error] Got negative offset:', ea, fpos, len, org_val, patch_val, comments
+            return None
+
+        if var_name:
+            export_data.append([var_name, offset, len, patch_val, org_val, comments])
+        else:
+            print '[Warning] Cannot find variable name:', ea, fpos, len, org_val, patch_val, comments
+
+    return export_data
 
 #--------------------------------------------------------------------------
 # Chooser
 #--------------------------------------------------------------------------
+class EmbeddedChooser(Choose):
+    """
+    Chooser class embedded in import form.
+    """
+    def __init__(self):
+        Choose.__init__(self,
+                         "Import",
+                         [ ["Name",     18 | Choose2.CHCOL_PLAIN],
+                           ["Offset",    5 | Choose2.CHCOL_HEX],
+                           ["Size",      4 | Choose2.CHCOL_DEC],
+                           ["Patched",  10 | Choose2.CHCOL_HEX],
+                           ["Original", 10 | Choose2.CHCOL_HEX],
+                           ["Comment",  20 | Choose2.CHCOL_PLAIN]
+                         ],
+                         flags = Choose2.CH_MULTI, width=30, height=18, embedded=True)
+
+        self.icon = 47
+        self.items = []
+        self.selected_idx = []
+
+    def SetItems(self, items):
+        self.items = items
+        self.Refresh()
+
+    def GetSelectedLine(self):
+        return self.selected_idx
+
+    def OnGetSize(self):
+        return len(self.items)
+
+    def OnSelectionChange(self, idx):
+        self.selected_idx = idx
+
+    def OnRefresh(self, idx):
+        pass
+
+    def OnClose(self):
+        pass
+
+    def OnGetLine(self, n):
+        return self.items[n]
+
 class PatchView(Choose2):
     """
     Chooser class to display and manage patched bytes in the database.
@@ -254,16 +410,16 @@ class PatchView(Choose2):
     def __init__(self):
         Choose2.__init__(self,
                          "IDA Patcher",
-                         [ ["Address",  15 | Choose2.CHCOL_HEX], 
-                           ["Name",     18 | Choose2.CHCOL_PLAIN], 
-                           ["Size",      4 | Choose2.CHCOL_DEC], 
+                         [ ["Address",  15 | Choose2.CHCOL_HEX],
+                           ["Name",     18 | Choose2.CHCOL_PLAIN],
+                           ["Size",      4 | Choose2.CHCOL_DEC],
                            ["Patched",  10 | Choose2.CHCOL_HEX],
-                           ["Original", 10 | Choose2.CHCOL_HEX], 
+                           ["Original", 10 | Choose2.CHCOL_HEX],
                            ["Comment",  30 | Choose2.CHCOL_PLAIN]
                          ],
                          flags = Choose2.CH_MULTI_EDIT)
 
-        self.popup_names = ["Insert", "Delete", "Edit", "Refresh"]
+        self.popup_names = ["Import patches", "Delete", "Edit", "Refresh"]
         self.icon = 47
 
         # Items for display and corresponding data
@@ -274,6 +430,7 @@ class PatchView(Choose2):
 
         # Initialize/Refresh the view
         self.refreshitems()
+        self.Refresh()
 
         # Data members
         self.patch_file = None
@@ -283,6 +440,7 @@ class PatchView(Choose2):
         self.cmd_apply_patches = None
         self.cmd_restore_bytes = None
         self.cmd_edit_comments = None
+        self.cmd_export_patches = None
 
     def show(self):
         # Attempt to open the view
@@ -291,11 +449,13 @@ class PatchView(Choose2):
         # Add extra context menu commands
         # NOTE: Make sure you check for duplicates.
         if self.cmd_apply_patches == None:
-            self.cmd_apply_patches = self.AddCommand("Apply patches to input file...", flags = idaapi.CHOOSER_POPUP_MENU | idaapi.CHOOSER_NO_SELECTION, icon=27)
+            self.cmd_apply_patches = self.AddCommand("Apply patches to input file", flags = idaapi.CHOOSER_POPUP_MENU | idaapi.CHOOSER_NO_SELECTION, icon=27)
         if self.cmd_restore_bytes == None:
-            self.cmd_restore_bytes = self.AddCommand("Restore original byte(s)...", flags = idaapi.CHOOSER_POPUP_MENU | idaapi.CHOOSER_MULTI_SELECTION, icon=139)
+            self.cmd_restore_bytes = self.AddCommand("Restore original byte(s)", flags = idaapi.CHOOSER_POPUP_MENU | idaapi.CHOOSER_MULTI_SELECTION, icon=139)
         if self.cmd_edit_comments == None:
-            self.cmd_edit_comments = self.AddCommand("Edit comments...", flags = idaapi.CHOOSER_POPUP_MENU | idaapi.CHOOSER_MULTI_SELECTION, icon=47)
+            self.cmd_edit_comments = self.AddCommand("Edit comments", flags = idaapi.CHOOSER_POPUP_MENU | idaapi.CHOOSER_MULTI_SELECTION, icon=47)
+        if self.cmd_export_patches == None:
+            self.cmd_export_patches = self.AddCommand("Export patches", flags = idaapi.CHOOSER_POPUP_MENU | idaapi.CHOOSER_MULTI_SELECTION, icon=27)
 
         return True
 
@@ -343,10 +503,10 @@ class PatchView(Choose2):
 
             # we dont need repeated comment
             comment = Comment(ea) or ""
-            
+
             # DATA STORAGE FORMAT:       address, function / fpos, len,    patched byte(s), original byte(s),  comments
             self.items.append(     ["%016X" % ea,            name, "1", "%02X" % patch_val, "%02X" % org_val,   comment])
-            self.items_data.append([          ea,            fpos,   1,        [patch_val],        [org_val],      None])
+            self.items_data.append([          ea,            fpos,   1,        [patch_val],        [org_val],   comment])
 
         return 0
 
@@ -355,7 +515,6 @@ class PatchView(Choose2):
         self.items = []
         idaapi.visit_patched_bytes(0, idaapi.BADADDR, self.get_patch_byte)
 
-        
     def OnCommand(self, n, cmd_id):
         # Apply patches to a file
         if cmd_id == self.cmd_apply_patches:
@@ -429,7 +588,7 @@ class PatchView(Choose2):
             buf = self.items_data[n][4]
 
             addr_str = "%#x" % ea
-            fpos_str = "%#x" % fpos if fpos != -1 else "N/A"  
+            fpos_str = "%#x" % fpos if fpos != -1 else "N/A"
             patch_str = self.items[n][3]
             org_str = self.items[n][4]
 
@@ -444,11 +603,11 @@ class PatchView(Choose2):
                 idaapi.put_many_bytes(ea, struct.pack("B"*len(buf), *buf))
 
                 # Refresh all IDA views
-                self.refreshitems()
+                self.Refresh()
 
             # Dispose the form
             f.Free()
-        
+
         elif cmd_id == self.cmd_edit_comments:
             # List start/end
             if n == -2 or n ==-3:
@@ -462,14 +621,14 @@ class PatchView(Choose2):
             ea = self.items_data[n][0]
             fpos =  self.items_data[n][1]
             comment = Comment(ea)
-            
+
             # Create the form
             f = CommentEditForm(comment)
 
             # Execute the form
             ok = f.Execute()
             if ok == 1:
-                
+
                 # Get edited comment value
                 buf = f.strComment.value
 
@@ -478,16 +637,48 @@ class PatchView(Choose2):
                 MakeComm(to_var_base(ea), buf)
 
                 # Refresh all IDA views
-                self.refreshitems()
-                
+                self.Refresh()
 
             # Dispose the form
             f.Free()
+
+        elif cmd_id == self.cmd_export_patches:
+            if not len(self.items) > 0:
+                return
+
+            # Create the form
+            f = PatchExportForm()
+
+            # Execute the form
+            ok = f.Execute()
+            if ok == 1:
+                exp_path = f.expPath.value
+                if not os.path.isdir(exp_path):
+                    exp_path = os.path.dirname(exp_path)
+
+                exp_path = os.path.join(exp_path, get_root_filename() + '.idapatch')
+                exp_data = prepare_export_data(self.items_data)
+
+                try:
+                    with open(exp_path, 'wb+') as exp_file:
+                        pickle.dump(exp_data, exp_file)
+                except Exception, e:
+                    idaapi.warning("File I/O error({0}): {1}".format(e.errno, e.strerror))
+
+                # Refresh all IDA views
+                self.Refresh()
+
+            # Dispose the form
+            f.Free()
+
         return
 
     def OnClose(self):
         self.cmd_apply_patches = None
         self.cmd_restore_bytes = None
+        self.cmd_edit_comments = None
+        self.cmd_export_patches = None
+        self.cmd_import_patches = None
 
     def OnEditLine(self, n):
 
@@ -505,9 +696,9 @@ class PatchView(Choose2):
         orig_buf = self.items_data[n][4]
 
         addr_str = "%#x" % ea
-        fpos_str = "%#x" % fpos if fpos != -1 else "N/A"     
+        fpos_str = "%#x" % fpos if fpos != -1 else "N/A"
         patch_str = self.items[n][3]
-        org_str = self.items[n][4]    
+        org_str = self.items[n][4]
 
         # Create the form
         f = PatchEditForm(addr_str, fpos_str, patch_str, org_str)
@@ -535,7 +726,20 @@ class PatchView(Choose2):
             idaapi.patch_many_bytes(ea, buf)
 
             # Refresh all IDA views
-            self.refreshitems()
+            self.Refresh()
+
+        # Dispose the form
+        f.Free()
+
+    # Because the shitty design of is_chooser, we cannot invoke OnCommand while the list is empty,
+    # otherwise we got python out-of-bound access Exception
+    def OnInsertLine(self):
+        # Create the form
+        f = PatchImportForm()
+
+        # Execute the form
+        ok = f.Execute()
+        self.Refresh()
 
         # Dispose the form
         f.Free()
@@ -560,15 +764,14 @@ class PatchView(Choose2):
 
     def OnRefresh(self, n):
         self.refreshitems()
-        return n
 
     def OnActivate(self):
-        self.refreshitems()
+        self.Refresh()
 
 
 #--------------------------------------------------------------------------
 # Handler
-#--------------------------------------------------------------------------        
+#--------------------------------------------------------------------------
 class RunHandler(idaapi.action_handler_t):
     def __init__(self, func, args):
         idaapi.action_handler_t.__init__(self)
@@ -580,14 +783,14 @@ class RunHandler(idaapi.action_handler_t):
 
     def update(self, ctx):
         return idaapi.AST_ENABLE_ALWAYS
- 
+
 #--------------------------------------------------------------------------
 # Manager
 #--------------------------------------------------------------------------
 class PatchManager():
     """ Class that manages GUI forms and patching methods of the plugin. """
-    
-    def __init__(self): 
+
+    def __init__(self):
         self.addmenu_item_ctxs = list()
         self.patch_view = PatchView()
 
@@ -595,7 +798,7 @@ class PatchManager():
     # Menu Items
     #--------------------------------------------------------------------------
     def add_menu_item_helper(self, action_name, menupath, text, hotkey, flags, pyfunc, args):
-        
+
         action = idaapi.action_desc_t(
             action_name,                # The action name. This acts like an ID and must be unique
             text,                       # The action text.
@@ -608,7 +811,7 @@ class PatchManager():
             menupath,                # The relative path of where to add the action
             action_name,             # The action ID
             flags)
-            
+
         if check is None:
             return 1
         else:
@@ -617,13 +820,13 @@ class PatchManager():
 
     def add_menu_items(self):
 
-        if self.add_menu_item_helper("idapatcher:patches", "View/Open subviews/", "Patched bytes view", "Ctrl-Alt-P", 1, self.show_patches_view, []): 
+        if self.add_menu_item_helper("idapatcher:patches", "View/Open subviews/", "Patched bytes view", "Ctrl-Alt-P", 1, self.show_patches_view, []):
             return 1
-        if self.add_menu_item_helper("idapatcher:edit", "Edit/Patch program/", "Edit selection...", "", 0, self.show_edit_form, []): 
+        if self.add_menu_item_helper("idapatcher:edit", "Edit/Patch program/", "Edit selection...", "", 0, self.show_edit_form, []):
             return 1
-        if self.add_menu_item_helper("idapatcher:fill", "Edit/Patch program/", "Fill selection...", "", 0, self.show_fill_form, []): 
+        if self.add_menu_item_helper("idapatcher:fill", "Edit/Patch program/", "Fill selection...", "", 0, self.show_fill_form, []):
             return 1
-        if self.add_menu_item_helper("idapatcher:import", "Edit/Patch program/", "Import data...", "Shift-I", 1, self.show_import_form, []): 
+        if self.add_menu_item_helper("idapatcher:import", "Edit/Patch program/", "Import data...", "Shift-I", 1, self.show_import_form, []):
             return 1
 
         return 0
@@ -634,8 +837,8 @@ class PatchManager():
 
     #--------------------------------------------------------------------------
     # View Callbacks
-    #--------------------------------------------------------------------------   
-    
+    #--------------------------------------------------------------------------
+
     # Patches View
     def show_patches_view(self):
         self.patch_view.show()
@@ -643,7 +846,7 @@ class PatchManager():
     # Patches Edit Dialog
     def show_edit_form(self):
         selection, start_ea, end_ea = idaapi.read_selection()
-        
+
         if not selection:
             start_ea = idaapi.get_screen_ea()
             end_ea = start_ea + 1
@@ -655,7 +858,7 @@ class PatchManager():
         fpos = idaapi.get_fileregion_offset(start_ea)
 
         addr_str = "%#x" % start_ea
-        fpos_str = "%#x" % fpos if fpos != -1 else "N/A" 
+        fpos_str = "%#x" % fpos if fpos != -1 else "N/A"
 
         f = PatchEditForm(addr_str, fpos_str, buf_str, buf_str)
 
@@ -687,11 +890,11 @@ class PatchManager():
     # Fill range with a value form
     def show_fill_form(self):
         selection, start_ea, end_ea = idaapi.read_selection()
-        
+
         if not selection:
             start_ea = idaapi.get_screen_ea()
             end_ea = start_ea + 1
-        
+
         # Default fill value
         fill_value = 0x00
 
@@ -785,7 +988,7 @@ class PatchManager():
 
         # Dispose the form
         f.Free()
-       
+
 #--------------------------------------------------------------------------
 # Plugin
 #--------------------------------------------------------------------------
@@ -797,7 +1000,7 @@ class idapatcher_t(plugin_t):
     wanted_name = "IDA Patcher"
     wanted_hotkey = ""
 
-    def init(self):  
+    def init(self):
         global idapatcher_manager
 
         # Check if already initialized
@@ -809,9 +1012,9 @@ class idapatcher_t(plugin_t):
                 idapatcher_manager.del_menu_items()
                 del idapatcher_manager
                 return idaapi.PLUGIN_SKIP
-            else:  
-                print("Initialized IDA Patcher  v%s (c) Peter Kacherginsky <iphelix@thesprawl.org>" % IDAPATCHER_VERSION)
-            
+            else:
+                print("Initialized IDA Patcher v%s" % IDAPATCHER_VERSION)
+
         return idaapi.PLUGIN_KEEP
 
     def run(self, arg):
@@ -820,7 +1023,7 @@ class idapatcher_t(plugin_t):
 
     def term(self):
         pass
-        
+
 
 def PLUGIN_ENTRY():
     return idapatcher_t()
