@@ -583,7 +583,7 @@ class PatchView(Choose2):
             if ok == 1:
 
                 # Restore original bytes
-                idaapi.put_many_bytes(ea, struct.pack("B"*len(buf), *buf))
+                idaapi.patch_many_bytes(ea, struct.pack("B"*len(buf), *buf))
 
                 # Refresh all IDA views
                 self.Refresh()
@@ -703,7 +703,7 @@ class PatchView(Choose2):
                 return
 
             # Restore original bytes first
-            idaapi.put_many_bytes(ea, struct.pack("B"*len(orig_buf), *orig_buf))
+            idaapi.patch_many_bytes(ea, struct.pack("B"*len(orig_buf), *orig_buf))
 
             # Now apply newly patched bytes
             idaapi.patch_many_bytes(ea, buf)
