@@ -168,7 +168,7 @@ Import patches
 <Import path:{impPath}>
 <Import:{btnImport}><Patch select:{btnSelPatch}><Patch all:{btnPatch}>
 """, {
-        'impPath': Form.DirInput(swidth=60, value=get_input_file_path()+'.idapatch'),
+        'impPath': Form.FileInput(swidth=60, open=True, value=get_input_file_path()+'.idapatch'),
         'cChooser': Form.EmbeddedChooserControl(self.chooser, swidth=71),
         'btnImport': Form.ButtonInput(self.OnImportClick),
         'btnSelPatch': Form.ButtonInput(self.OnPatchClick),
@@ -187,19 +187,24 @@ Import patches
         for patch in imp_data:
             var_name, offset, length, patch_val, org_val, comments = patch
             if not var_name:
-                print '[Warning] Unable to parse patch without symbol', patch
+                print '[Warning] Unable to parse patch without symbol', patch[:3]
                 continue
 
-            ea = idc.get_name_ea_simple(var_name) + offset
+            var_addr = idc.get_name_ea_simple(var_name)
+            if var_addr == idc.BADADDR:
+                print '[Warning] Unable to find symbol', patch[:3]
+                continue
+
+            ea = var_addr + offset
             seg = SegName(ea)
-            name = GetFunctionName(ea) or Name(to_var_base(ea)) or ''
-            name = idc.Demangle(name, idc.GetLongPrm(idc.INF_SHORT_DN)) or name
+            name = idc.Demangle(var_name, idc.GetLongPrm(idc.INF_SHORT_DN)) or var_name
             name = "{}: {}".format(seg, name)
 
-            cmp_val = idaapi.get_bytes(ea, length)
-            str_val = struct.pack("B"*length, *org_val)
+            byte_str = idaapi.get_bytes(ea, length)
+            org_str = struct.pack("B"*length, *org_val)
+            patch_str = struct.pack("B"*length, *patch_val)
 
-            if cmp_val == str_val:
+            if byte_str == org_str:
                 self.valid_patches.append((ea, length, patch_val, comments))
                 view_patches.append([
                     name,
@@ -209,6 +214,10 @@ Import patches
                     " ".join(map(lambda n: "{:02X}".format(n), org_val)),
                     comments
                 ])
+            elif byte_str == patch_str:
+                print '[Notice] Patched bytes', patch[:3]
+            else:
+                print '[Warning] Dropping patch with different origin value', patch[:3]
 
         self.chooser.SetItems(view_patches)
         self.RefreshField(self.cChooser)
@@ -225,7 +234,7 @@ Import patches
             view_patches = [self.chooser.items[i] for i in range(len(self.chooser.items)) if i not in idx]
 
         for ea, length, patch_val, comments in patches:
-            idaapi.put_many_bytes(ea, struct.pack("B"*length, *patch_val))
+            idaapi.patch_many_bytes(ea, struct.pack("B"*length, *patch_val))
             MakeComm(to_var_base(ea), comments)
 
         self.chooser.SetItems(view_patches)
@@ -633,11 +642,11 @@ class PatchView(Choose2):
                 exp_path = os.path.join(exp_path, get_root_filename() + '.idapatch')
                 exp_data = prepare_export_data(self.items_data)
 
-                try:
+                if exp_data:
                     with open(exp_path, 'wb+') as exp_file:
                         pickle.dump(exp_data, exp_file)
-                except Exception, e:
-                    idaapi.warning("File I/O error({0}): {1}".format(e.errno, e.strerror))
+                else:
+                    print '[Error] Patch export failed'
 
                 # Refresh all IDA views
                 self.Refresh()
