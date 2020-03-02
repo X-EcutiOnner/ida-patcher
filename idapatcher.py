@@ -729,7 +729,6 @@ class PatchView(Choose2):
         self.items_data  = []
 
         # Initialize/Refresh the view
-        self.refreshitems()
         self.Refresh()
 
         # Data members
@@ -745,6 +744,9 @@ class PatchView(Choose2):
     def show(self):
         # Attempt to open the view
         if self.Show() < 0: return False
+
+        # Refresh to update patches
+        self.Refresh()
 
         # Add extra context menu commands
         # NOTE: Make sure you check for duplicates.
