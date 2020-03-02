@@ -1132,11 +1132,16 @@ class PatchManager():
         if self.add_menu_item_helper("idapatcher:import", "Edit/Patch program/", "Import data...", "Shift-I", 1, self.show_import_form, []):
             return 1
 
+        # Unregister default Patched Bytes view
+        idaapi.update_action_shortcut('PatchedBytes', '')
+
         return 0
 
     def del_menu_items(self):
         for menupath, action_name in self.addmenu_item_ctxs:
             idaapi.detach_action_from_menu(menupath, action_name)
+
+        idaapi.update_action_shortcut('PatchedBytes', 'Ctrl-Alt-P')
 
     #--------------------------------------------------------------------------
     # View Callbacks
