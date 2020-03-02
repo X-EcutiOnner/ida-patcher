@@ -1100,14 +1100,15 @@ class PatchManager():
     #--------------------------------------------------------------------------
     # Menu Items
     #--------------------------------------------------------------------------
-    def add_menu_item_helper(self, action_name, menupath, text, hotkey, flags, pyfunc, args):
+    def add_menu_item_helper(self, action_name, menupath, text, hotkey, flags, pyfunc, args=[], icon=-1):
 
         action = idaapi.action_desc_t(
             action_name,                # The action name. This acts like an ID and must be unique
             text,                       # The action text.
             RunHandler(pyfunc, args),   # The action handler.
             hotkey,                     # Optional: the action shortcut
-            None                        # Optional: the action tooltip (available in menus/toolbar)
+            None,                       # Optional: the action tooltip (available in menus/toolbar)
+            icon
         )
         idaapi.register_action(action)
         check = idaapi.attach_action_to_menu(
@@ -1123,13 +1124,13 @@ class PatchManager():
 
     def add_menu_items(self):
 
-        if self.add_menu_item_helper("idapatcher:patches", "View/Open subviews/", "Patched bytes view", "Ctrl-Alt-P", 1, self.show_patches_view, []):
+        if self.add_menu_item_helper("idapatcher:patches", "View/Open subviews/", "IDA Patcher", "Ctrl-Alt-P", 1, self.show_patches_view, icon=47):
             return 1
-        if self.add_menu_item_helper("idapatcher:edit", "Edit/Patch program/", "Edit selection...", "", 0, self.show_edit_form, []):
+        if self.add_menu_item_helper("idapatcher:edit", "Edit/Patch program/", "Edit selection...", "", 0, self.show_edit_form):
             return 1
-        if self.add_menu_item_helper("idapatcher:fill", "Edit/Patch program/", "Fill selection...", "", 0, self.show_fill_form, []):
+        if self.add_menu_item_helper("idapatcher:fill", "Edit/Patch program/", "Fill selection...", "", 0, self.show_fill_form):
             return 1
-        if self.add_menu_item_helper("idapatcher:import", "Edit/Patch program/", "Import data...", "Shift-I", 1, self.show_import_form, []):
+        if self.add_menu_item_helper("idapatcher:import", "Edit/Patch program/", "Import data...", "Shift-I", 1, self.show_import_form):
             return 1
 
         # Unregister default Patched Bytes view
