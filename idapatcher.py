@@ -648,7 +648,9 @@ def assemble(assembly, address, arch, mode, syntax=None):
         ks = Ks(arch, mode)
         if arch == KS_ARCH_X86:
             ks.syntax = syntax
-        encoding, count = ks.asm(fix_ida_syntax(assembly), address)
+
+        # don't feed address param
+        encoding, count = ks.asm(fix_ida_syntax(assembly))
     except KsError as e:
         # keep the below code for debugging
         #print("Keypatch Error: {0}".format(e))
