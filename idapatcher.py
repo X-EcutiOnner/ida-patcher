@@ -12,6 +12,7 @@ IDAPATCHER_VERSION = "2.1"
 import idaapi
 import idautils
 import idc
+import ctypes
 from idc import GetFlags, isCode
 from idaapi import Form, Choose2, Choose, plugin_t
 from keystone import *
@@ -69,6 +70,18 @@ BRANCH_INST = [
     idaapi.ARM_br,
     idaapi.ARM_bx,
     idaapi.ARM_bxj
+]
+
+PATCHABLE_TARGET = [
+    (KS_ARCH_ARM64, KS_MODE_LITTLE_ENDIAN),
+    (KS_ARCH_X86, KS_MODE_LITTLE_ENDIAN)
+]
+
+# for now it only support aarch64
+# we have to differentiate aarch64 and arm
+PATCHABLE_INST = [
+    idaapi.ARM_b,
+    idaapi.ARM_bl,
 ]
 
 arch_lists = {
@@ -287,30 +300,34 @@ Import patches
                 print_to_log('[Error] Unable to find symbol')
                 continue
 
+            patch_addr = var_addr + offset
+
             if patch_tag:
                 if not check_symbol_addr(patch_tag):
-                    # may extend patch length, for now we just quit and alert user
-                    # symbol_addr_fixup()
-                    print_to_log('[Warning] Dropping patch with different symbol address')
-                    for _, var_name, _ in patch_tag:
-                        print_to_log('  => ' + var_name, postfix=False)
-                    continue
+                    if symbol_addr_fixup(patch_addr, patch_val, patch_tag):
+                        print_to_log('[Notice] Auto fixed target symbol address')
+                        for _, target_name, _ in patch_tag:
+                            print_to_log('  => ' + target_name, postfix=False)
+                    else:
+                        print_to_log('[Warning] Dropping patch with different symbol address')
+                        for _, target_name, _ in patch_tag:
+                            print_to_log('  => ' + target_name, postfix=False)
+                        continue
                 else:
                     # although symbol address is the same,
                     # the offset between instruction and function may change
                     print_to_log('[Notice] Branch target could be wrong')
 
-            ea = var_addr + offset
-            seg = SegName(ea)
+            seg = SegName(patch_addr)
             name = idc.Demangle(var_name, idc.GetLongPrm(idc.INF_SHORT_DN)) or var_name
             name = "{}: {}".format(seg, name)
 
-            byte_str = idaapi.get_bytes(ea, length)
+            byte_str = idaapi.get_bytes(patch_addr, length)
             org_str = struct.pack("B"*length, *org_val)
             patch_str = struct.pack("B"*length, *patch_val)
 
             if byte_str == org_str:
-                self.valid_patches.append((ea, length, patch_val, comments))
+                self.valid_patches.append((patch_addr, length, patch_val, comments))
                 view_patches.append([
                     name,
                     "{:04X}".format(offset),
@@ -321,8 +338,8 @@ Import patches
                 ])
             elif byte_str == patch_str:
                 print_to_log('[Notice] Already patched bytes')
-            elif orig_tag and rm_branch_cmp(byte_str, org_str, orig_tag) and check_branch_tag(ea, orig_tag):
-                self.valid_patches.append((ea, length, patch_val, comments))
+            elif orig_tag and rm_branch_cmp(byte_str, org_str, orig_tag) and check_branch_tag(patch_addr, orig_tag):
+                self.valid_patches.append((patch_addr, length, patch_val, comments))
                 view_patches.append([
                     name,
                     "{:04X}".format(offset),
@@ -755,6 +772,70 @@ def assemble(assembly, address, arch, mode, syntax=None):
 
     return (encoding, count)
 
+def symbol_addr_fixup(patch_addr, patch_val, patch_tag):
+    arch, mode = get_hardware_mode()
+    if (arch, mode) not in PATCHABLE_TARGET:
+        return False
+
+    for offset, var_name, inst_exp in patch_tag:
+        symbol_addr = idc.get_name_ea_simple(var_name)
+        fixup_addr = patch_addr + offset
+        var_addr = inst_exp['xref']['address']
+        inst = inst_exp['itype']
+
+        # symbol doesn't exist
+        if var_addr == idaapi.BADADDR:
+            return False
+
+        # same address
+        if var_addr == symbol_addr:
+            continue
+
+        # cannot handle when offset < 0 but needs fixup
+        # (extend patch length)
+        if offset < 0:
+            return False
+
+        # not supported instruction
+        if inst not in PATCHABLE_INST:
+            return False
+
+        opcode = 0
+        if arch == KS_ARCH_ARM64:
+            diff = ctypes.c_uint32(symbol_addr - fixup_addr).value
+            if diff % 4 != 0:
+                print '[Error] Calculated address offset not aligned to 4 byte (aarch64)'
+                return False
+
+            if inst == idaapi.ARM_b:
+                if patch_val[offset + 3] & 0x14 == 0x14:
+                    # 0 0 0 1 0 1 [imm26]
+                    imm26 = (diff / 4) & 0x3ffffff
+                    opcode = 0x14000000 | imm26
+                else:
+                    # 0 1 0 1 0 1 0 0 [imm19] 0 [cond4]
+                    imm19 = (diff / 4) & 0x7ffff
+                    cond4 = patch_val[offset + 0] & 0xf
+                    opcode = 0x54000000 | (imm19 << 5) | cond4
+
+            elif inst == idaapi.ARM_bl:
+                # 1 0 0 1 0 1 [imm26]
+                imm26 = (diff / 4) & 0x3ffffff
+                if imm26 >= (1 << 26):
+                    return False
+
+                opcode = 0x94000000 | imm26
+
+            opcode = map(ord, struct.pack('<I', opcode))
+
+        elif arch == KS_ARCH_X86:
+            pass
+
+        for i in range(len(opcode)):
+            patch_val[offset + i] = opcode[i]
+
+        return True
+
 def gen_branch_tag(start_ea, length):
     branch_tags = []
     inst_ea = to_var_base(start_ea)
@@ -866,9 +947,6 @@ def check_branch_tag(ea, branch_tag):
 
 def check_symbol_addr(branch_tag):
     for (offset, var_name, inst_exp) in branch_tag:
-        if not var_name:
-            pass
-
         var_addr = idc.get_name_ea_simple(var_name)
         if var_addr != inst_exp['xref']['address']:
             return False
