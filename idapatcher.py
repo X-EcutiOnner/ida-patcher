@@ -250,14 +250,14 @@ Import patches
 <Loaded patches:{cChooser}>
 <Import path:{impPath}>
 <Import:{btnImport}><Patch select:{btnSelPatch}><Patch all:{btnPatch}>
-<:{outputLog}>
+<Log:{outputLog}>
 """, {
         'impPath': Form.FileInput(swidth=60, open=True, value=get_input_file_path()+'.idapatch'),
         'cChooser': Form.EmbeddedChooserControl(self.chooser, swidth=71),
         'btnImport': Form.ButtonInput(self.OnImportClick),
         'btnSelPatch': Form.ButtonInput(self.OnPatchClick),
         'btnPatch': Form.ButtonInput(self.OnPatchClick, code=1),
-        'outputLog': Form.MultiLineTextControl(swidth=71, flags=Form.MultiLineTextControl.TXTF_FIXEDFONT)
+        'outputLog': Form.MultiLineTextControl(swidth=71, flags=Form.MultiLineTextControl.TXTF_READONLY)
         })
         self.Compile()
 
@@ -288,7 +288,7 @@ Import patches
                 print(log_text[:-1])
                 output[0] += log_text
 
-                self.SetControlValue(self.outputLog, idaapi.textctrl_info_t(text=output[0]))
+                self.SetControlValue(self.outputLog, idaapi.textctrl_info_t(text=output[0], flags=Form.MultiLineTextControl.TXTF_READONLY))
                 self.RefreshField(self.outputLog)
 
             if not var_name:
