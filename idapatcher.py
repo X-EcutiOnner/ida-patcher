@@ -12,6 +12,7 @@ IDAPATCHER_VERSION = "2.1"
 import idaapi
 import idautils
 import idc
+from idc import GetFlags, isCode
 from idaapi import Form, Choose2, Choose, plugin_t
 from keystone import *
 
@@ -22,6 +23,54 @@ import struct
 import binascii
 
 # Constants
+BRANCH_INST = [
+    idaapi.NN_ja,
+    idaapi.NN_jae,
+    idaapi.NN_jb,
+    idaapi.NN_jbe,
+    idaapi.NN_jc,
+    idaapi.NN_jcxz,
+    idaapi.NN_je,
+    idaapi.NN_jecxz,
+    idaapi.NN_jg,
+    idaapi.NN_jge,
+    idaapi.NN_jl,
+    idaapi.NN_jle,
+    idaapi.NN_jmp,
+    idaapi.NN_jmpfi,
+    idaapi.NN_jmpni,
+    idaapi.NN_jmpshort,
+    idaapi.NN_jna,
+    idaapi.NN_jnae,
+    idaapi.NN_jnb,
+    idaapi.NN_jnbe,
+    idaapi.NN_jnc,
+    idaapi.NN_jne,
+    idaapi.NN_jng,
+    idaapi.NN_jnge,
+    idaapi.NN_jnl,
+    idaapi.NN_jnle,
+    idaapi.NN_jno,
+    idaapi.NN_jnp,
+    idaapi.NN_jns,
+    idaapi.NN_jnz,
+    idaapi.NN_jo,
+    idaapi.NN_jp,
+    idaapi.NN_jpe,
+    idaapi.NN_jpo,
+    idaapi.NN_jrcxz,
+    idaapi.NN_js,
+    idaapi.NN_jz,
+    idaapi.ARM_b,
+    idaapi.ARM_bl,
+    idaapi.ARM_blr,
+    idaapi.ARM_blx1,
+    idaapi.ARM_blx2,
+    idaapi.ARM_br,
+    idaapi.ARM_bx,
+    idaapi.ARM_bxj
+]
+
 arch_lists = {
     "X86 16-bit": (KS_ARCH_X86, KS_MODE_16),                # X86 16-bit
     "X86 32-bit": (KS_ARCH_X86, KS_MODE_32),                # X86 32-bit
@@ -41,7 +90,7 @@ syntax_lists = {
     "Nasm": KS_OPT_SYNTAX_NASM,
     "AT&T": KS_OPT_SYNTAX_ATT
 }
-    
+
 #--------------------------------------------------------------------------
 # Forms
 #--------------------------------------------------------------------------
@@ -188,12 +237,14 @@ Import patches
 <Loaded patches:{cChooser}>
 <Import path:{impPath}>
 <Import:{btnImport}><Patch select:{btnSelPatch}><Patch all:{btnPatch}>
+<:{outputLog}>
 """, {
         'impPath': Form.FileInput(swidth=60, open=True, value=get_input_file_path()+'.idapatch'),
         'cChooser': Form.EmbeddedChooserControl(self.chooser, swidth=71),
         'btnImport': Form.ButtonInput(self.OnImportClick),
         'btnSelPatch': Form.ButtonInput(self.OnPatchClick),
-        'btnPatch': Form.ButtonInput(self.OnPatchClick, code=1)
+        'btnPatch': Form.ButtonInput(self.OnPatchClick, code=1),
+        'outputLog': Form.MultiLineTextControl(swidth=71, flags=Form.MultiLineTextControl.TXTF_FIXEDFONT)
         })
         self.Compile()
 
@@ -203,18 +254,51 @@ Import patches
         with open(imp_path, 'rb') as imp_file:
             imp_data = pickle.load(imp_file)
 
+        # workaround from
+        # https://stackoverflow.com/questions/10270970/python-how-do-i-capture-a-variable-declared-in-a-non-global-ancestral-outer-sco
+        output = ['']
+        patch_data = imp_data['patch']
+        branch_tag = imp_data['branch_tag']
+
         # check correctness first
         view_patches = []
-        for patch in imp_data:
-            var_name, offset, length, patch_val, org_val, comments = patch
+        for patch in zip(patch_data, branch_tag):
+            (var_name, offset, length, patch_val, org_val, comments), (patch_tag, orig_tag) = patch
+
+            def print_to_log(s, postfix=True):
+                if postfix:
+                    name = idc.Demangle(var_name, idc.GetLongPrm(idc.INF_SHORT_DN)) or var_name
+                    log_text = '{} {}+0x{:04x}, {}byte(s)\n'.format(s, name, offset, length)
+                else:
+                    log_text = s + '\n'
+
+                print(log_text[:-1])
+                output[0] += log_text
+
+                self.SetControlValue(self.outputLog, idaapi.textctrl_info_t(text=output[0]))
+                self.RefreshField(self.outputLog)
+
             if not var_name:
-                print '[Warning] Unable to parse patch without symbol', patch[:3]
+                print_to_log('[Error] Unable to parse patch without symbol')
                 continue
 
             var_addr = idc.get_name_ea_simple(var_name)
             if var_addr == idc.BADADDR:
-                print '[Warning] Unable to find symbol', patch[:3]
+                print_to_log('[Error] Unable to find symbol')
                 continue
+
+            if patch_tag:
+                if not check_symbol_addr(patch_tag):
+                    # may extend patch length, for now we just quit and alert user
+                    # symbol_addr_fixup()
+                    print_to_log('[Warning] Dropping patch with different symbol address')
+                    for _, var_name, _ in patch_tag:
+                        print_to_log('  => ' + var_name, postfix=False)
+                    continue
+                else:
+                    # although symbol address is the same,
+                    # the offset between instruction and function may change
+                    print_to_log('[Notice] Branch target could be wrong')
 
             ea = var_addr + offset
             seg = SegName(ea)
@@ -236,9 +320,20 @@ Import patches
                     comments
                 ])
             elif byte_str == patch_str:
-                print '[Notice] Patched bytes', patch[:3]
+                print_to_log('[Notice] Already patched bytes')
+            elif orig_tag and rm_branch_cmp(byte_str, org_str, orig_tag) and check_branch_tag(ea, orig_tag):
+                self.valid_patches.append((ea, length, patch_val, comments))
+                view_patches.append([
+                    name,
+                    "{:04X}".format(offset),
+                    str(length),
+                    " ".join(map(lambda n: "{:02X}".format(n), patch_val)),
+                    " ".join(map(lambda n: "{:02X}".format(n), org_val)),
+                    comments
+                ])
+                print_to_log('[Notice] Original bytes differ, still able to patch')
             else:
-                print '[Warning] Dropping patch with different origin value', patch[:3]
+                print_to_log('[Warning] Dropping patch with different origin value')
 
         self.chooser.SetItems(view_patches)
         self.RefreshField(self.cChooser)
@@ -361,7 +456,7 @@ r"""Edit comment
 def to_var_base(ea):
     return idaapi.get_item_head(ea)
 
-def prepare_export_data(patches):
+def prepare_patch_data(patches):
     export_data = []
 
     for (ea, fpos, len, patch_val, org_val, comments) in patches:
@@ -406,7 +501,7 @@ def find_idx_by_value(dictionary, value, default=None):
         idx = default
 
     return idx
-    
+
 def check_address(address):
     try:
         if idaapi.is_mapped(address):
@@ -422,7 +517,7 @@ def get_hardware_mode():
 
     # heuristically detect hardware setup
     info = idaapi.get_inf_structure()
-    
+
     try:
         cpuname = info.procname.lower()
     except:
@@ -435,7 +530,7 @@ def get_hardware_mode():
         # older IDA versions
         is_be = idaapi.cvar.inf.mf
     # print("Keypatch BIG_ENDIAN = %s" %is_be)
-    
+
     if cpuname == "metapc":
         arch = KS_ARCH_X86
         if info.is_64bit():
@@ -659,6 +754,126 @@ def assemble(assembly, address, arch, mode, syntax=None):
         encoding, count = None, 0
 
     return (encoding, count)
+
+def gen_branch_tag(start_ea, length):
+    branch_tags = []
+    inst_ea = to_var_base(start_ea)
+    end_ea = idc.next_head(start_ea + length)
+
+    while inst_ea < end_ea and isCode(GetFlags(inst_ea)):
+        inst = idautils.DecodeInstruction(inst_ea)
+        # idaapi.is_indirect_jump_insn(inst) or idaapi.is_call_insn(inst) won't get idaapi.ARM_b instruction
+        if inst.itype in BRANCH_INST:
+            # can use XrefsFrom(ea, flags=ida_xref.XREF_FAR) as alternative to find xref address
+            for i in range(len(inst.Operands)):
+                if idc.get_operand_type(inst.ea, i) in [idaapi.o_near, idaapi.o_far]:
+                    # if it's a vaild near/far branch, func shouldn't return -1
+                    branch_target = idc.get_operand_value(inst.ea, i)
+                    var_name = Name(branch_target)
+                    offset = inst_ea - start_ea
+
+                    # because inst comes from python C binding, it cannot be pickled
+                    inst_exp = {
+                        'Operands': [{
+                            'reg': op.reg,
+                            'type': op.type
+                        } for op in inst.Operands],
+                        'itype': inst.itype,
+                        'size': inst.size,
+                        'xref': {
+                            'idx': i,
+                            'address': branch_target
+                        }
+                    }
+
+                    # if it's in code section, ida pro will always generate a label for target address
+                    # consider the patch here is not related to branch instructions
+                    if not var_name:
+                        continue
+
+                    # ignore auto generated label
+                    if var_name.startswith('loc_') or var_name.startswith('locret_') or var_name.startswith('sub_'):
+                        pass
+                    else:
+                        branch_tags.append((offset, var_name, inst_exp))
+
+                    break
+
+        inst_ea = idc.next_head(inst_ea)
+
+    return branch_tags
+
+def unpatch_all(patch_data):
+    for patch in patch_data:
+        ea, _, length, _, org_val, _ = patch
+        idaapi.patch_many_bytes(ea, struct.pack("B"*length, *org_val))
+
+def patch_all(patch_data):
+    for patch in patch_data:
+        ea, _, length, patch_val, _, _ = patch
+        idaapi.patch_many_bytes(ea, struct.pack("B"*length, *patch_val))
+
+# to get original bytes, we have to first unpatch all the bytes
+def gen_branch_tag_origin(patch_data):
+    branch_tag_list = []
+    unpatch_all(patch_data)
+
+    for patch in patch_data:
+        ea, _, length, _, _, _ = patch
+        branch_tag_list.append(gen_branch_tag(ea, length))
+
+    patch_all(patch_data)
+    return branch_tag_list
+
+def gen_branch_tag_patched(patch_data):
+    branch_tag_list = []
+    for patch in patch_data:
+        ea, _, length, _, _, _ = patch
+        branch_tag_list.append(gen_branch_tag(ea, length))
+
+    return branch_tag_list
+
+def prepare_branch_tag(patch_data):
+    patch_tag = gen_branch_tag_patched(patch_data)
+    orig_tag = gen_branch_tag_origin(patch_data)
+
+    return zip(patch_tag, orig_tag)
+
+def rm_branch_cmp(byte_str, cmp_str, branch_tag):
+    adjust = 0
+    for (offset, var_name, inst_exp) in branch_tag:
+        start = (offset if offset >= 0 else 0) - adjust
+        end = offset + inst_exp['size'] - adjust
+
+        byte_str = byte_str[:start] + byte_str[end:]
+        cmp_str = cmp_str[:start] + cmp_str[end:]
+
+        adjust += end - start
+
+    return byte_str == cmp_str
+
+def check_branch_tag(ea, branch_tag):
+    for (offset, var_name, inst_exp) in branch_tag:
+        inst = idautils.DecodeInstruction(ea + offset)
+        if all([op.reg == op_cmp['reg'] for (op, op_cmp) in zip(inst.Operands, inst_exp['Operands'])]) and inst.itype == inst_exp['itype']:
+            branch_target = idc.get_operand_value(inst.ea, inst_exp['xref']['idx'])
+            if var_name != idc.Name(branch_target):
+                return False
+        else:
+            return False
+
+    return True
+
+def check_symbol_addr(branch_tag):
+    for (offset, var_name, inst_exp) in branch_tag:
+        if not var_name:
+            pass
+
+        var_addr = idc.get_name_ea_simple(var_name)
+        if var_addr != inst_exp['xref']['address']:
+            return False
+
+    return True
 
 #--------------------------------------------------------------------------
 # Chooser
@@ -961,7 +1176,13 @@ class PatchView(Choose2):
                     exp_path = os.path.dirname(exp_path)
 
                 exp_path = os.path.join(exp_path, get_root_filename() + '.idapatch')
-                exp_data = prepare_export_data(self.items_data)
+                exp_patch = prepare_patch_data(self.items_data)
+                exp_branch_tag = prepare_branch_tag(self.items_data)
+
+                exp_data = {
+                    'patch': exp_patch,
+                    'branch_tag': exp_branch_tag
+                }
 
                 if exp_data:
                     with open(exp_path, 'wb+') as exp_file:
@@ -1270,7 +1491,7 @@ class PatchManager():
                 assembly = f.strPatch.value
                 syntax = get_value_by_idx(syntax_lists, f.cSyntax.value)
 
-                output, count = assemble(assembly, start_ea, self.arch, self.mode, syntax)              
+                output, count = assemble(assembly, start_ea, self.arch, self.mode, syntax)
                 if not (output and count):
                     idaapi.warning("Compilation failed.")
                     f.Free()
@@ -1309,7 +1530,7 @@ class PatchManager():
             except Exception:
                 print 'Patch failure'
                 pass
-                
+
             # Refresh all IDA views
             self.patch_view.Refresh()
 
