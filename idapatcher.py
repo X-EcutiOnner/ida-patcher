@@ -1032,7 +1032,6 @@ class PatchView(Choose2):
 
         # Command callbacks
         self.cmd_apply_patches = None
-        self.cmd_restore_bytes = None
         self.cmd_edit_comments = None
         self.cmd_export_patches = None
 
@@ -1047,8 +1046,6 @@ class PatchView(Choose2):
         # NOTE: Make sure you check for duplicates.
         if self.cmd_apply_patches == None:
             self.cmd_apply_patches = self.AddCommand("Apply patches to input file", flags = idaapi.CHOOSER_POPUP_MENU | idaapi.CHOOSER_NO_SELECTION, icon=27)
-        if self.cmd_restore_bytes == None:
-            self.cmd_restore_bytes = self.AddCommand("Restore original byte(s)", flags = idaapi.CHOOSER_POPUP_MENU | idaapi.CHOOSER_MULTI_SELECTION, icon=139)
         if self.cmd_edit_comments == None:
             self.cmd_edit_comments = self.AddCommand("Edit comments", flags = idaapi.CHOOSER_POPUP_MENU | idaapi.CHOOSER_MULTI_SELECTION, icon=47)
         if self.cmd_export_patches == None:
@@ -1164,47 +1161,6 @@ class PatchView(Choose2):
             # Dispose the form
             f.Free()
 
-        # Restore selected byte(s)
-        elif cmd_id == self.cmd_restore_bytes:
-
-            # List start/end
-            if n == -2 or n ==-3:
-                return
-
-            elif not len(self.items) > 0:
-                idaapi.warning("There are no patches to restore.")
-                return
-
-            # Nothing selected
-            elif n == -1:
-                idaapi.warning("Please select bytes to restore.")
-                return
-
-            ea = self.items_data[n][0]
-            fpos =  self.items_data[n][1]
-            buf = self.items_data[n][4]
-
-            addr_str = "%#x" % ea
-            fpos_str = "%#x" % fpos if fpos != -1 else "N/A"
-            patch_str = self.items[n][3]
-            org_str = self.items[n][4]
-
-            # Create the form
-            f = PatchRestoreForm(addr_str, fpos_str, patch_str, org_str)
-
-            # Execute the form
-            ok = f.Execute()
-            if ok == 1:
-
-                # Restore original bytes
-                idaapi.patch_many_bytes(ea, struct.pack("B"*len(buf), *buf))
-
-                # Refresh all IDA views
-                self.Refresh()
-
-            # Dispose the form
-            f.Free()
-
         elif cmd_id == self.cmd_edit_comments:
             # List start/end
             if n == -2 or n ==-3:
@@ -1278,7 +1234,6 @@ class PatchView(Choose2):
 
     def OnClose(self):
         self.cmd_apply_patches = None
-        self.cmd_restore_bytes = None
         self.cmd_edit_comments = None
         self.cmd_export_patches = None
         self.cmd_import_patches = None
@@ -1349,6 +1304,32 @@ class PatchView(Choose2):
 
     def OnSelectLine(self, n):
         idaapi.jumpto(self.items_data[n][0])
+
+    def OnDeleteLine(self, n):
+        ea = self.items_data[n][0]
+        fpos =  self.items_data[n][1]
+        buf = self.items_data[n][4]
+
+        addr_str = "%#x" % ea
+        fpos_str = "%#x" % fpos if fpos != -1 else "N/A"
+        patch_str = self.items[n][3]
+        org_str = self.items[n][4]
+
+        # Create the form
+        f = PatchRestoreForm(addr_str, fpos_str, patch_str, org_str)
+
+        # Execute the form
+        ok = f.Execute()
+        if ok == 1:
+
+            # Restore original bytes
+            idaapi.patch_many_bytes(ea, struct.pack("B"*len(buf), *buf))
+
+            # Refresh all IDA views
+            self.Refresh()
+
+        # Dispose the form
+        f.Free()
 
     def OnGetLine(self, n):
         return self.items[n]
