@@ -388,32 +388,32 @@ r"""BUTTON YES* Import
 Import data
 
 {FormChangeCb}
-<##Start EA   :{intStartEA}>
-<##End EA     :{intEndEA}>
+<Start EA   :{intStartEA}>
+<End EA     :{intEndEA}>
 
 Import type:                    Patching options:
-<hex string:{rHex}><##Trim to selection:{cSize}>{cGroup}>
+<hex string:{rHex}><Trim to selection:{cSize}><NOP padding:{cPad}>{cGroup}>
 <assembly:{rAsm}>
 <string literal:{rString}>
 <binary file:{rFile}>{rGroup}>
-
 <Syntax\::{cSyntax}>
 <:{strPatch}>
-<##Import BIN file:{impFile}>
+<Import BIN file:{impFile}>
 """, {
         'intStartEA': Form.NumericInput(swidth=40,tp=Form.FT_ADDR,value=start_ea),
         'intEndEA': Form.NumericInput(swidth=40,tp=Form.FT_ADDR,value=end_ea),
 
-        'cGroup': Form.ChkGroupControl(("cSize",)),
+        'cGroup': Form.ChkGroupControl(("cSize", "cPad")),
         'rGroup': Form.RadGroupControl(("rHex", "rAsm", "rString", "rFile")),
         'cSyntax': Form.DropdownListControl(
+            width=5,
+            swidth=5,
             items = syntax_keys,
             readonly = True,
             selval = syntax_id
         ),
         'strPatch': Form.MultiLineTextControl(swidth=80, flags=Form.MultiLineTextControl.TXTF_FIXEDFONT),
         'impFile': Form.FileInput(swidth=50, open=True),
-
         'FormChangeCb': Form.FormChangeCb(self.OnFormChange),
         })
         self.arch, _ = get_hardware_mode()
@@ -425,11 +425,13 @@ Import type:                    Patching options:
             self.SetFocusedField(self.strPatch)
             self.EnableField(self.strPatch, True)
             self.EnableField(self.impFile, False)
+            self.EnableField(self.cSyntax, False)
 
             if self.arch != KS_ARCH_X86:
                 self.ShowField(self.cSyntax, False)
+                self.ShowField(self.cPad, False)
             else:
-                self.EnableField(self.cSyntax, False)
+                self.EnableField(self.cPad, True)
 
         # Form OK pressed
         elif fid == -2:
@@ -437,8 +439,10 @@ Import type:                    Patching options:
 
         # Form from text box
         elif fid in (self.rHex.id, self.rAsm.id, self.rString.id):
-            if fid == self.rAsm.id and self.arch == KS_ARCH_X86:
+            if fid == self.rAsm.id:
                 self.EnableField(self.cSyntax, True)
+            else:
+                self.EnableField(self.cSyntax, False)
 
             self.SetFocusedField(self.strPatch)
             self.EnableField(self.strPatch, True)
@@ -1581,7 +1585,12 @@ class PatchManager():
             # Trim to selection if needed:
             if f.cSize.checked:
                 buf_size = end_ea - start_ea
-                buf = buf[0:buf_size]
+                buf = buf[:buf_size]
+
+            # NOP padding for x86
+            if f.cPad.checked:
+                buf_size = end_ea - start_ea
+                buf = buf.ljust(buf_size, '\x90')
 
             # Now apply newly patched bytes
             try:
