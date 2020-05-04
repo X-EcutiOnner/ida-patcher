@@ -22,16 +22,16 @@ Works on IDA Pro 7.0.
 ### Usage
 Press `Ctrl-Alt-P` or navigate to `View/Open subviews/IDA Patcher` to enjoy.
 
-Import data window can be opened by pressing `Shift-I` on *IDA View*/*Hex View*.
+Import data window can be opened by pressing `Shift-I` in *IDA View*/*Hex View*.
 
 Patch import/export menu is on the right click menu of *IDA Patcher View*
 
 ### Install
-IDA Patcher depend on [Keystone](http://www.keystone-engine.org/) to compile assembly, just follow instructions on their's site. 
+IDA Patcher depends on [Keystone](http://www.keystone-engine.org/) to compile assembly, just follow instructions on their website. 
 
 For Windows users, install by **Python module for Windows** is highly recommanded.
 
-After installed Keystone, simply copy 'idapatcher.py' to IDA's plugins folder, it will be automatically loaded the next time you start IDA Pro.
+After installed Keystone, simply copy 'idapatcher.py' to IDA's plugins folder, it will be automatically loaded on the next time you start IDA Pro.
 
 Since I only test it on IDA Pro 7.0, if you encountered some bugs, please feel free to file an issue.
 
