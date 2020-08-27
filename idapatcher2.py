@@ -9,26 +9,19 @@
 IDAPATCHER_VERSION = "2.1"
 
 # IDA libraries
-import ida_nalt
 import idaapi
 import idautils
 import idc
-import ida_ua
-import ida_name
-from ida_bytes import get_full_flags, is_code
-from idaapi import Form, plugin_t
-from ida_kernwin import Choose
+import ctypes
+from idc import GetFlags, isCode
+from idaapi import Form, Choose2, Choose, plugin_t
+from keystone import *
 
 # Python modules
 import os
 import shutil
 import struct
 import binascii
-import pickle
-import ctypes
-
-# Other modules
-from keystone import *
 
 # Constants
 BRANCH_INST = [
@@ -236,7 +229,7 @@ Export patches
 
 <Export path:{expPath}>
 """, {
-        'expPath': Form.DirInput(swidth=50, value=os.path.dirname(ida_nalt.get_input_file_path()))
+        'expPath': Form.DirInput(swidth=50, value=os.path.dirname(get_input_file_path()))
         })
 
         self.Compile()
@@ -259,7 +252,7 @@ Import patches
 <Import:{btnImport}><Patch select:{btnSelPatch}><Patch all:{btnPatch}>
 <Log:{outputLog}>
 """, {
-        'impPath': Form.FileInput(swidth=60, open=True, value=ida_nalt.get_input_file_path()+'.idapatch'),
+        'impPath': Form.FileInput(swidth=60, open=True, value=get_input_file_path()+'.idapatch'),
         'cChooser': Form.EmbeddedChooserControl(self.chooser, swidth=71),
         'btnImport': Form.ButtonInput(self.OnImportClick),
         'btnSelPatch': Form.ButtonInput(self.OnPatchClick),
@@ -287,7 +280,7 @@ Import patches
 
             def print_to_log(s, postfix=True):
                 if postfix:
-                    name = idc.demangle_name(var_name, idc.get_inf_attr(idc.INF_SHORT_DN)) or var_name
+                    name = idc.Demangle(var_name, idc.GetLongPrm(idc.INF_SHORT_DN)) or var_name
                     log_text = '{} {}+0x{:04x}, {}byte(s)\n'.format(s, name, offset, length)
                 else:
                     log_text = s + '\n'
@@ -325,8 +318,8 @@ Import patches
                     # the offset between instruction and function may change
                     print_to_log('[Notice] Branch target could be wrong')
 
-            seg = idc.get_segm_name(patch_addr)
-            name = idc.demangle_name(var_name, idc.get_inf_attr(idc.INF_SHORT_DN)) or var_name
+            seg = SegName(patch_addr)
+            name = idc.Demangle(var_name, idc.GetLongPrm(idc.INF_SHORT_DN)) or var_name
             name = "{}: {}".format(seg, name)
 
             byte_str = idaapi.get_bytes(patch_addr, length)
@@ -374,8 +367,8 @@ Import patches
             view_patches = [self.chooser.items[i] for i in range(len(self.chooser.items)) if i not in idx]
 
         for ea, length, patch_val, comments in patches:
-            idaapi.patch_bytes(ea, struct.pack("B"*length, *patch_val))
-            idc.set_cmt(to_var_base(ea), comments, 0)
+            idaapi.patch_many_bytes(ea, struct.pack("B"*length, *patch_val))
+            MakeComm(to_var_base(ea), comments)
 
         self.chooser.SetItems(view_patches)
         self.RefreshField(self.cChooser)
@@ -488,18 +481,18 @@ def prepare_patch_data(patches):
     export_data = []
 
     for (ea, fpos, len, patch_val, org_val, comments) in patches:
-        var_name = idc.get_func_name(ea) or get_name(to_var_base(ea))
+        var_name = GetFunctionName(ea) or Name(to_var_base(ea))
         base = idc.get_name_ea_simple(var_name)
         offset = ea - base
 
         if offset < 0:
-            print('[Error] Got negative offset:', ea, fpos, len, org_val, patch_val, comments)
+            print '[Error] Got negative offset:', ea, fpos, len, org_val, patch_val, comments
             return None
 
         if var_name:
             export_data.append([var_name, offset, len, patch_val, org_val, comments])
         else:
-            print('[Warning] Cannot find variable name:', ea, fpos, len, org_val, patch_val, comments)
+            print '[Warning] Cannot find variable name:', ea, fpos, len, org_val, patch_val, comments
 
     return export_data
 
@@ -776,9 +769,9 @@ def assemble(assembly, address, arch, mode, syntax=None):
         encoding, count = ks.asm(fix_ida_syntax(assembly))
     except KsError as e:
         # keep the below code for debugging
-        # print("Keypatch Error: {0}".format(e))
-        # print("Original asm: {0}".format(assembly))
-        # print("Fixed up asm: {0}".format(fix_ida_syntax(assembly)))
+        #print("Keypatch Error: {0}".format(e))
+        #print("Original asm: {0}".format(assembly))
+        #print("Fixed up asm: {0}".format(fix_ida_syntax(assembly)))
         encoding, count = None, 0
 
     return (encoding, count)
@@ -815,33 +808,32 @@ def symbol_addr_fixup(patch_addr, patch_val, patch_tag):
         if arch == KS_ARCH_ARM64:
             diff = ctypes.c_uint32(symbol_addr - fixup_addr).value
             if diff % 4 != 0:
-                print('[Error] Calculated address offset not aligned to 4 byte (aarch64)')
+                print '[Error] Calculated address offset not aligned to 4 byte (aarch64)'
                 return False
 
             if inst == idaapi.ARM_b:
                 if patch_val[offset + 3] & 0x14 == 0x14:
                     # 0 0 0 1 0 1 [imm26]
-                    imm26 = (diff // 4) & 0x3ffffff
+                    imm26 = (diff / 4) & 0x3ffffff
                     opcode = 0x14000000 | imm26
                 else:
                     # 0 1 0 1 0 1 0 0 [imm19] 0 [cond4]
-                    imm19 = (diff // 4) & 0x7ffff
+                    imm19 = (diff / 4) & 0x7ffff
                     cond4 = patch_val[offset + 0] & 0xf
                     opcode = 0x54000000 | (imm19 << 5) | cond4
 
             elif inst == idaapi.ARM_bl:
                 # 1 0 0 1 0 1 [imm26]
-                imm26 = (diff // 4) & 0x3ffffff
+                imm26 = (diff / 4) & 0x3ffffff
+                if imm26 >= (1 << 26):
+                    return False
+
                 opcode = 0x94000000 | imm26
 
-            else:
-                print(f'[Error] Encountered unimplemented instruction: {inst}, file a issue or implement it yourself')
-                raise NotImplementedError
-
-            opcode = struct.pack('<I', opcode)
+            opcode = map(ord, struct.pack('<I', opcode))
 
         elif arch == KS_ARCH_X86:
-            raise NotImplementedError
+            pass
 
         for i in range(len(opcode)):
             patch_val[offset + i] = opcode[i]
@@ -853,18 +845,16 @@ def gen_branch_tag(start_ea, length):
     inst_ea = to_var_base(start_ea)
     end_ea = idc.next_head(start_ea + length)
 
-    while inst_ea < end_ea and is_code(get_full_flags(inst_ea)):
-        inst = ida_ua.insn_t()
-        ida_ua.decode_insn(inst, inst_ea)
-
+    while inst_ea < end_ea and isCode(GetFlags(inst_ea)):
+        inst = idautils.DecodeInstruction(inst_ea)
         # idaapi.is_indirect_jump_insn(inst) or idaapi.is_call_insn(inst) won't get idaapi.ARM_b instruction
         if inst.itype in BRANCH_INST:
             # can use XrefsFrom(ea, flags=ida_xref.XREF_FAR) as alternative to find xref address
-            for i in range(len(inst.ops)):
+            for i in range(len(inst.Operands)):
                 if idc.get_operand_type(inst.ea, i) in [idaapi.o_near, idaapi.o_far]:
                     # if it's a vaild near/far branch, func shouldn't return -1
                     branch_target = idc.get_operand_value(inst.ea, i)
-                    var_name = get_name(branch_target)
+                    var_name = Name(branch_target)
                     offset = inst_ea - start_ea
 
                     # because inst comes from python C binding, it cannot be pickled
@@ -872,7 +862,7 @@ def gen_branch_tag(start_ea, length):
                         'Operands': [{
                             'reg': op.reg,
                             'type': op.type
-                        } for op in inst.ops],
+                        } for op in inst.Operands],
                         'itype': inst.itype,
                         'size': inst.size,
                         'xref': {
@@ -901,12 +891,12 @@ def gen_branch_tag(start_ea, length):
 def unpatch_all(patch_data):
     for patch in patch_data:
         ea, _, length, _, org_val, _ = patch
-        idaapi.patch_bytes(ea, struct.pack("B"*length, *org_val))
+        idaapi.patch_many_bytes(ea, struct.pack("B"*length, *org_val))
 
 def patch_all(patch_data):
     for patch in patch_data:
         ea, _, length, patch_val, _, _ = patch
-        idaapi.patch_bytes(ea, struct.pack("B"*length, *patch_val))
+        idaapi.patch_many_bytes(ea, struct.pack("B"*length, *patch_val))
 
 # to get original bytes, we have to first unpatch all the bytes
 def gen_branch_tag_origin(patch_data):
@@ -950,9 +940,9 @@ def rm_branch_cmp(byte_str, cmp_str, branch_tag):
 def check_branch_tag(ea, branch_tag):
     for (offset, var_name, inst_exp) in branch_tag:
         inst = idautils.DecodeInstruction(ea + offset)
-        if all([op.reg == op_cmp['reg'] for (op, op_cmp) in zip(inst.ops, inst_exp['Operands'])]) and inst.itype == inst_exp['itype']:
+        if all([op.reg == op_cmp['reg'] for (op, op_cmp) in zip(inst.Operands, inst_exp['Operands'])]) and inst.itype == inst_exp['itype']:
             branch_target = idc.get_operand_value(inst.ea, inst_exp['xref']['idx'])
-            if var_name != get_name(branch_target):
+            if var_name != idc.Name(branch_target):
                 return False
         else:
             return False
@@ -967,22 +957,6 @@ def check_symbol_addr(branch_tag):
 
     return True
 
-def get_selection():
-    view = idaapi.get_current_viewer()
-    t0, t1 = idaapi.twinpos_t(), idaapi.twinpos_t()
-    start_ea, end_ea = None, None
-
-    if not idaapi.read_selection(view, t0, t1):
-        start_ea = idaapi.get_screen_ea()
-        end_ea = start_ea + 1
-    else:
-        start_ea, end_ea = t0.place(view).ea, t1.place(view).ea
-    
-    return start_ea, end_ea
-
-def get_name(ea):
-    return idc.get_name(ea, ida_name.GN_VISIBLE)
-
 #--------------------------------------------------------------------------
 # Chooser
 #--------------------------------------------------------------------------
@@ -993,14 +967,14 @@ class EmbeddedChooser(Choose):
     def __init__(self):
         Choose.__init__(self,
                          "Import",
-                         [ ["Name",     18 | Choose.CHCOL_PLAIN],
-                           ["Offset",    5 | Choose.CHCOL_HEX],
-                           ["Size",      4 | Choose.CHCOL_DEC],
-                           ["Patched",  10 | Choose.CHCOL_HEX],
-                           ["Original", 10 | Choose.CHCOL_HEX],
-                           ["Comment",  20 | Choose.CHCOL_PLAIN]
+                         [ ["Name",     18 | Choose2.CHCOL_PLAIN],
+                           ["Offset",    5 | Choose2.CHCOL_HEX],
+                           ["Size",      4 | Choose2.CHCOL_DEC],
+                           ["Patched",  10 | Choose2.CHCOL_HEX],
+                           ["Original", 10 | Choose2.CHCOL_HEX],
+                           ["Comment",  20 | Choose2.CHCOL_PLAIN]
                          ],
-                         flags = Choose.CH_MULTI, width=30, height=18, embedded=True)
+                         flags = Choose2.CH_MULTI, width=30, height=18, embedded=True)
 
         self.icon = 47
         self.items = []
@@ -1028,21 +1002,21 @@ class EmbeddedChooser(Choose):
     def OnGetLine(self, n):
         return self.items[n]
 
-class PatchView(Choose):
+class PatchView(Choose2):
     """
     Chooser class to display and manage patched bytes in the database.
     """
     def __init__(self):
-        Choose.__init__(self,
+        Choose2.__init__(self,
                          "IDA Patcher",
-                         [ ["Address",  15 | Choose.CHCOL_HEX],
-                           ["Name",     18 | Choose.CHCOL_PLAIN],
-                           ["Size",      4 | Choose.CHCOL_DEC],
-                           ["Patched",  10 | Choose.CHCOL_HEX],
-                           ["Original", 10 | Choose.CHCOL_HEX],
-                           ["Comment",  30 | Choose.CHCOL_PLAIN]
+                         [ ["Address",  15 | Choose2.CHCOL_HEX],
+                           ["Name",     18 | Choose2.CHCOL_PLAIN],
+                           ["Size",      4 | Choose2.CHCOL_DEC],
+                           ["Patched",  10 | Choose2.CHCOL_HEX],
+                           ["Original", 10 | Choose2.CHCOL_HEX],
+                           ["Comment",  30 | Choose2.CHCOL_PLAIN]
                          ],
-                         flags = 0)
+                         flags = Choose2.CH_MULTI_EDIT)
 
         self.popup_names = ["Import patches", "Delete", "Edit", "Refresh"]
         self.icon = 47
@@ -1075,11 +1049,11 @@ class PatchView(Choose):
         # Add extra context menu commands
         # NOTE: Make sure you check for duplicates.
         if self.cmd_apply_patches == None:
-            self.cmd_apply_patches = self.AddCommand("Apply patches to input file", flags = idaapi.CHOOSER_POPUP_MENU, icon=27)
+            self.cmd_apply_patches = self.AddCommand("Apply patches to input file", flags = idaapi.CHOOSER_POPUP_MENU | idaapi.CHOOSER_NO_SELECTION, icon=27)
         if self.cmd_edit_comments == None:
-            self.cmd_edit_comments = self.AddCommand("Edit comments", flags = idaapi.CHOOSER_POPUP_MENU, icon=47)
+            self.cmd_edit_comments = self.AddCommand("Edit comments", flags = idaapi.CHOOSER_POPUP_MENU | idaapi.CHOOSER_MULTI_SELECTION, icon=47)
         if self.cmd_export_patches == None:
-            self.cmd_export_patches = self.AddCommand("Export patches", flags = idaapi.CHOOSER_POPUP_MENU | idaapi.CHOOSER_NO_SELECTION, icon=27)
+            self.cmd_export_patches = self.AddCommand("Export patches", flags = idaapi.CHOOSER_POPUP_MENU | idaapi.CHOOSER_MULTI_SELECTION, icon=27)
 
         return True
 
@@ -1120,13 +1094,13 @@ class PatchView(Choose):
         # Add new patch byte to the list
         else:
 
-            seg = idc.get_segm_name(ea)
-            name = idc.get_func_name(ea) or get_name(to_var_base(ea)) or ''
-            name = idc.demangle_name(name, idc.get_inf_attr(idc.INF_SHORT_DN)) or name
+            seg = SegName(ea)
+            name = GetFunctionName(ea) or Name(to_var_base(ea)) or ''
+            name = idc.Demangle(name, idc.GetLongPrm(idc.INF_SHORT_DN)) or name
             name = "%s: %s" % (seg, name)
 
             # we dont need repeated comment
-            comment = idc.get_cmt(ea, 0) or ""
+            comment = Comment(ea) or ""
 
             # DATA STORAGE FORMAT:       address, function / fpos, len,    patched byte(s), original byte(s),  comments
             self.items.append(     ["%016X" % ea,            name, "1", "%02X" % patch_val, "%02X" % org_val,   comment])
@@ -1148,7 +1122,7 @@ class PatchView(Choose):
             end_ea = idaapi.cvar.inf.maxEA
 
             # Set initial output file values
-            org_file = ida_nalt.get_input_file_path()
+            org_file = GetInputFilePath()
             bkp_file = "%s.bak" % org_file
 
             # Create the form
@@ -1175,7 +1149,7 @@ class PatchView(Choose):
                 # Apply patches
                 try:
                     self.patch_file = open(new_org_file,'rb+')
-                except Exception as e:
+                except Exception, e:
                     idaapi.warning("Cannot update file '%s'" % new_org_file)
                 else:
                     r = idaapi.visit_patched_bytes(start_ea, end_ea, self.apply_patch_byte)
@@ -1193,7 +1167,7 @@ class PatchView(Choose):
 
         elif cmd_id == self.cmd_edit_comments:
             # List start/end
-            if n == -2 or n == -3:
+            if n == -2 or n ==-3:
                 return
             elif not len(self.items) > 0:
                 return
@@ -1203,7 +1177,7 @@ class PatchView(Choose):
 
             ea = self.items_data[n][0]
             fpos =  self.items_data[n][1]
-            comment = idc.get_cmt(ea, 0)
+            comment = Comment(ea)
 
             # Create the form
             f = CommentEditForm(comment)
@@ -1217,7 +1191,7 @@ class PatchView(Choose):
 
                 # make comment in the middle of instruction could fail
                 # -> switch ea to the start of instruction
-                idc.set_cmt(to_var_base(ea), buf, 0)
+                MakeComm(to_var_base(ea), buf)
 
                 # Refresh all IDA views
                 self.Refresh()
@@ -1239,7 +1213,7 @@ class PatchView(Choose):
                 if not os.path.isdir(exp_path):
                     exp_path = os.path.dirname(exp_path)
 
-                exp_path = os.path.join(exp_path, ida_nalt.get_root_filename() + '.idapatch')
+                exp_path = os.path.join(exp_path, get_root_filename() + '.idapatch')
                 exp_patch = prepare_patch_data(self.items_data)
                 exp_branch_tag = prepare_branch_tag(self.items_data)
 
@@ -1248,11 +1222,11 @@ class PatchView(Choose):
                     'branch_tag': exp_branch_tag
                 }
 
-                try:
+                if exp_data:
                     with open(exp_path, 'wb+') as exp_file:
                         pickle.dump(exp_data, exp_file)
-                except Exception as e:
-                    print('[Error] Patch export failed: {}', e)
+                else:
+                    print '[Error] Patch export failed'
 
                 # Refresh all IDA views
                 self.Refresh()
@@ -1269,6 +1243,7 @@ class PatchView(Choose):
         self.cmd_import_patches = None
 
     def OnEditLine(self, n):
+
         # Empty list
         if n == -1:
             return
@@ -1301,16 +1276,16 @@ class PatchView(Choose):
             buf = buf.replace('0x','')      # remove '0x' prefixes
             try:
                 buf = binascii.unhexlify(buf)   # convert to bytes
-            except Exception as e:
+            except Exception, e:
                 idaapi.warning("Invalid input: %s" % e)
                 f.Free()
                 return
 
             # Restore original bytes first
-            idaapi.patch_bytes(ea, struct.pack("B"*len(orig_buf), *orig_buf))
+            idaapi.patch_many_bytes(ea, struct.pack("B"*len(orig_buf), *orig_buf))
 
             # Now apply newly patched bytes
-            idaapi.patch_bytes(ea, buf)
+            idaapi.patch_many_bytes(ea, buf)
 
             # Refresh all IDA views
             self.Refresh()
@@ -1319,8 +1294,8 @@ class PatchView(Choose):
         f.Free()
 
     # Because the shitty design of is_chooser, we cannot invoke OnCommand while the list is empty,
-    # Hell yeah, we get rid of out-of-bound access exception
-    def OnInsertLine(self, n):
+    # otherwise we got python out-of-bound access Exception
+    def OnInsertLine(self):
         # Create the form
         f = PatchImportForm()
 
@@ -1352,7 +1327,7 @@ class PatchView(Choose):
         if ok == 1:
 
             # Restore original bytes
-            idaapi.patch_bytes(ea, struct.pack("B"*len(buf), *buf))
+            idaapi.patch_many_bytes(ea, struct.pack("B"*len(buf), *buf))
 
             # Refresh all IDA views
             self.Refresh()
@@ -1364,9 +1339,11 @@ class PatchView(Choose):
         return self.items[n]
 
     def OnGetIcon(self, n):
+
         # Empty list
         if not len(self.items) > 0:
             return -1
+
         else:
             return 47
 
@@ -1463,7 +1440,11 @@ class PatchManager():
 
     # Patches Edit Dialog
     def show_edit_form(self):
-        start_ea, end_ea = get_selection()
+        selection, start_ea, end_ea = idaapi.read_selection()
+
+        if not selection:
+            start_ea = idaapi.get_screen_ea()
+            end_ea = start_ea + 1
 
         buf_len = end_ea - start_ea
         buf = idaapi.get_many_bytes(start_ea, buf_len) or "\xFF"*buf_len
@@ -1487,13 +1468,13 @@ class PatchManager():
             buf = buf.replace('0x','')      # remove '0x' prefixes
             try:
                 buf = binascii.unhexlify(buf)   # convert to bytes
-            except Exception as e:
+            except Exception, e:
                 idaapi.warning("Invalid input: %s" % e)
                 f.Free()
                 return
 
             # Now apply newly patched bytes
-            idaapi.patch_bytes(start_ea, buf)
+            idaapi.patch_many_bytes(start_ea, buf)
 
             # Refresh all IDA views
             self.patch_view.Refresh()
@@ -1503,7 +1484,11 @@ class PatchManager():
 
     # Fill range with a value form
     def show_fill_form(self):
-        start_ea, end_ea = get_selection()
+        selection, start_ea, end_ea = idaapi.read_selection()
+
+        if not selection:
+            start_ea = idaapi.get_screen_ea()
+            end_ea = start_ea + 1
 
         # Default fill value
         fill_value = 0x00
@@ -1537,7 +1522,11 @@ class PatchManager():
 
     # Import data form
     def show_import_form(self):
-        start_ea, end_ea = get_selection()
+        selection, start_ea, end_ea = idaapi.read_selection()
+
+        if not selection:
+            start_ea = idaapi.get_screen_ea()
+            end_ea = start_ea + 1
 
         # Create the form
         f = DataImportForm(start_ea, end_ea);
@@ -1548,14 +1537,13 @@ class PatchManager():
 
             start_ea = f.intStartEA.value
             end_ea = f.intEndEA.value
-            buf = None
 
             if f.rFile.selected:
                 imp_file = f.impFile.value
 
                 try:
                     f_imp_file = open(imp_file,'rb')
-                except Exception as e:
+                except Exception, e:
                     idaapi.warning("File I/O error({0}): {1}".format(e.errno, e.strerror))
                     return
                 else:
@@ -1584,12 +1572,10 @@ class PatchManager():
                     buf = buf.replace('0x','')      # remove '0x' prefixes
                     try:
                         buf = binascii.unhexlify(buf)   # convert to bytes
-                    except Exception as e:
+                    except Exception, e:
                         idaapi.warning("Invalid input: %s" % e)
                         f.Free()
                         return
-                else:
-                    buf = buf.encode('ascii')
 
             if not len(buf):
                 idaapi.warning("There was nothing to import.")
@@ -1604,14 +1590,13 @@ class PatchManager():
             # NOP padding for x86
             if f.cPad.checked:
                 buf_size = end_ea - start_ea
-                buf = buf.ljust(buf_size, b'\x90')
+                buf = buf.ljust(buf_size, '\x90')
 
             # Now apply newly patched bytes
             try:
-                idaapi.patch_bytes(start_ea, bytes(buf))
-            except Exception as e:
-                print(e)
-                print('Patch failure')
+                idaapi.patch_many_bytes(start_ea, buf)
+            except Exception:
+                print 'Patch failure'
                 pass
 
             # Refresh all IDA views
@@ -1639,7 +1624,7 @@ class idapatcher_t(plugin_t):
 
             idapatcher_manager = PatchManager()
             if idapatcher_manager.add_menu_items():
-                print('Failed to initialize IDA Patcher.')
+                print "Failed to initialize IDA Patcher."
                 idapatcher_manager.del_menu_items()
                 del idapatcher_manager
                 return idaapi.PLUGIN_SKIP
@@ -1674,5 +1659,5 @@ def idapatcher_main():
     idapatcher_manager.show_patches_view()
 
 if __name__ == '__main__':
-    idapatcher_main()
+    #idapatcher_main()
     pass

@@ -1,7 +1,7 @@
 ## IDA Patcher
 A user-friendly binary patch management plugin to replace Hex-Ray's IDA Pro default *Patched Bytes view*. 
 
-Works on IDA Pro 7.0.
+Works on IDA Pro 7.4+ (python3), IDA Pro 7.0 (python2)
 
 ### Feature
 - Import data (`Shift-I`), the invert of builtin Export data (`Shift-E`), supported input methods:
