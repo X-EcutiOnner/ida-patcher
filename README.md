@@ -33,6 +33,6 @@ For Windows users, install by **Python module for Windows** is highly recommande
 
 After installed Keystone, simply copy 'idapatcher.py' to IDA's plugins folder, it will be automatically loaded on the next time you start IDA Pro.
 
-Since I only test it on IDA Pro 7.0, if you encountered some bugs, please feel free to file an issue.
+If you encountered some bugs, please feel free to file an issue.
 
 **Happy patching!**
